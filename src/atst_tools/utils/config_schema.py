@@ -1068,6 +1068,8 @@ class AbacusSocketConfig(StrictConfig):
 # Workflows that drive exactly one fixed-cell ABACUS calculator, so one
 # persistent socket client is both safe and useful.
 SOCKET_SUPPORTED_WORKFLOWS = ("relax", "md", "vibration", "dimer", "sella")
+# AbacusSocketIO is fixed-cell only, so variable-cell MD ensembles are excluded.
+SOCKET_FIXED_CELL_MD_ENSEMBLES = ("nve", "nvt")
 
 
 class AbacusConfig(BaseModel):
@@ -1302,8 +1304,14 @@ class ATSTConfig(StrictConfig):
                     "calculator.abacus.socket is supported only for calculation.type in "
                     f"{list(SOCKET_SUPPORTED_WORKFLOWS)}; got {workflow!r}"
                 )
-            if isinstance(self.calculation, MDCalculation) and self.calculation.driver != "ase":
-                raise ValueError("calculator.abacus.socket requires calculation.driver=ase for md")
+            if isinstance(self.calculation, MDCalculation):
+                if self.calculation.driver != "ase":
+                    raise ValueError("calculator.abacus.socket requires calculation.driver=ase for md")
+                if self.calculation.ensemble not in SOCKET_FIXED_CELL_MD_ENSEMBLES:
+                    raise ValueError(
+                        "calculator.abacus.socket requires a fixed-cell md ensemble "
+                        f"{list(SOCKET_FIXED_CELL_MD_ENSEMBLES)}; got {self.calculation.ensemble!r}"
+                    )
             if self.calculator.constant_potential is not None:
                 raise ValueError(
                     "calculator.abacus.socket cannot be combined with calculator.constant_potential"

@@ -1,7 +1,14 @@
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
+from ase import Atoms
+from ase.calculators.calculator import Calculator, all_changes
 
 from atst_tools.calculators import factory
+from atst_tools.calculators.constant_potential import _backend_log_paths, _backend_scf_converged
 from atst_tools.utils.config_schema import ATSTConfig
+from atst_tools.workflows.md import _ScfValidatedCalculator
 
 
 class FakeProfile:
@@ -142,3 +149,67 @@ def test_schema_rejects_socket_for_unsupported_workflow():
 def test_schema_rejects_unknown_socket_key():
     with pytest.raises(ValueError):
         ATSTConfig.model_validate(_schema_config({"host": "node1"}))
+
+
+def test_socket_rejects_variable_cell_md_ensemble(fakes):
+    with pytest.raises(ValueError, match="fixed-cell md ensemble"):
+        factory.CalculatorFactory.get_calculator(
+            "abacus", _config(True, "md", ensemble="npt"), directory="run"
+        )
+
+
+def test_socket_accepts_fixed_cell_md(fakes):
+    calc = factory.CalculatorFactory.get_calculator(
+        "abacus", _config(True, "md", ensemble="nve"), directory="run"
+    )
+
+    assert isinstance(calc, FakeSocketIO)
+
+
+def test_schema_rejects_socket_for_npt_md():
+    config = _schema_config(True, "md", ensemble="nvt", algorithm="bussi")
+    ATSTConfig.model_validate(config)
+    config["calculation"].update(ensemble="npt", algorithm="nptberendsen")
+    with pytest.raises(ValueError, match="fixed-cell md ensemble"):
+        ATSTConfig.model_validate(config)
+
+
+class _SocketLikeBackend(Calculator):
+    """Socket-shaped backend: SCF state is an attribute, ABACUS runs in ``abacus``."""
+
+    implemented_properties = ["energy", "forces"]
+
+    def __init__(self, converged, abacus_directory="."):
+        super().__init__()
+        self.converged = converged
+        self.abacus = SimpleNamespace(directory=abacus_directory, parameters={})
+
+    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+        super().calculate(atoms, properties, system_changes)
+        self.last_scf_converged = self.converged
+        self.results = {"energy": -1.0, "forces": np.zeros((len(atoms), 3))}
+
+
+@pytest.mark.parametrize("converged", [True, False])
+def test_scf_evidence_reads_socket_attribute(converged):
+    backend = _SocketLikeBackend(converged)
+    backend.last_scf_converged = converged
+
+    assert _backend_scf_converged(backend, {"energy": -1.0}) is converged
+
+
+def test_scf_log_paths_follow_wrapped_abacus_directory(tmp_path):
+    backend = _SocketLikeBackend(None, abacus_directory=str(tmp_path / "md_run"))
+
+    assert _backend_log_paths(backend) == (tmp_path / "md_run" / "OUT.ABACUS" / "running_scf.log",)
+
+
+def test_md_scf_guard_accepts_converged_socket_and_rejects_unconverged():
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[5, 5, 5], pbc=True)
+
+    atoms.calc = _ScfValidatedCalculator(_SocketLikeBackend(True))
+    assert atoms.get_forces().shape == (2, 3)
+
+    atoms.calc = _ScfValidatedCalculator(_SocketLikeBackend(False))
+    with pytest.raises(RuntimeError, match="SCF not converged"):
+        atoms.get_forces()

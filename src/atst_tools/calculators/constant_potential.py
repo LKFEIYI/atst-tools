@@ -755,7 +755,14 @@ def _read_vacuum_from_logs(directory: str | Path, suffix: str | None = None) -> 
 
 
 def _backend_log_paths(calculator: Any) -> tuple[Path, ...]:
-    """Return only the current backend's SCF log candidates."""
+    """Return only the current backend's SCF log candidates.
+
+    An abacuslite ``AbacusSocketIO`` keeps its ABACUS working directory and
+    INPUT parameters on the wrapped FileIO calculator (``calculator.abacus``);
+    its own ``directory`` is ASE's default ``'.'``, which is not where ABACUS
+    writes.
+    """
+    calculator = getattr(calculator, "abacus", calculator)
     directory = getattr(calculator, "directory", None)
     if directory is None:
         return ()
@@ -769,7 +776,15 @@ def _backend_log_paths(calculator: Any) -> tuple[Path, ...]:
 
 
 def _backend_scf_converged(calculator: Any, results: Mapping[str, Any]) -> bool | None:
-    """Read an explicit SCF-validity fact from results or the current log."""
+    """Read an explicit SCF-validity fact from results, the backend, or its log.
+
+    Args:
+        calculator: Backend calculator that produced ``results``.
+        results: Result mapping of the evaluation being validated.
+
+    Returns:
+        ``True``/``False`` for an explicit fact, ``None`` when no evidence exists.
+    """
     for key in ("scf_converged", "scf_convergence", "scf_status", "convergence"):
         if key not in results or results[key] is None:
             continue
@@ -786,6 +801,11 @@ def _backend_scf_converged(calculator: Any, results: Mapping[str, Any]) -> bool 
             return bool(int(value))
         except (TypeError, ValueError):
             return None
+    # abacuslite's socket client reports the per-evaluation SCF state from the
+    # ABACUS i-PI metadata as an attribute; it is reset before every request.
+    socket_converged = getattr(calculator, "last_scf_converged", None)
+    if isinstance(socket_converged, (bool, np.bool_)):
+        return bool(socket_converged)
     for path in _backend_log_paths(calculator):
         if not path.is_file():
             continue

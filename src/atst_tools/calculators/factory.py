@@ -25,6 +25,7 @@ from atst_tools.calculators.dp import DeepPotentialFactory
 from atst_tools.runtime import counters as runtime_counters
 from atst_tools.runtime import launch as runtime_launch
 from atst_tools.utils.config_schema import (
+    SOCKET_FIXED_CELL_MD_ENSEMBLES,
     SOCKET_SUPPORTED_WORKFLOWS,
     ConstantPotentialConfig,
     validate_constant_potential_md_scope,
@@ -196,8 +197,15 @@ def _check_socket_workflow(config: Dict[str, Any]) -> None:
             "calculator.abacus.socket is supported only for calculation.type in "
             f"{list(SOCKET_SUPPORTED_WORKFLOWS)}; got {workflow!r}"
         )
-    if workflow == "md" and calculation.get("driver", "ase") != "ase":
-        raise ValueError("calculator.abacus.socket requires calculation.driver=ase for md")
+    if workflow == "md":
+        if calculation.get("driver", "ase") != "ase":
+            raise ValueError("calculator.abacus.socket requires calculation.driver=ase for md")
+        ensemble = calculation.get("ensemble", "nvt")
+        if ensemble not in SOCKET_FIXED_CELL_MD_ENSEMBLES:
+            raise ValueError(
+                "calculator.abacus.socket requires a fixed-cell md ensemble "
+                f"{list(SOCKET_FIXED_CELL_MD_ENSEMBLES)}; got {ensemble!r}"
+            )
 
 
 def close_socket_calculators() -> None:
