@@ -906,9 +906,10 @@ unconverged steps are still rejected.
 
 In socket mode ABACUS counts the first frame as an extrapolation step, so the
 default `first-order` scheme over-extrapolates at the second geometry.
-`vibration`, `dimer` and `ccqn` also move back and forth between geometries,
-which breaks the linear trend `first-order` assumes. For these workflows,
-`chg_extrap: atomic` in `parameters` usually needs fewer SCF iterations.
+`vibration`, `dimer`, `sella` and `ccqn` also move back and forth between
+geometries, which breaks the linear trend `first-order` assumes. For these
+workflows, `chg_extrap: atomic` in `parameters` usually needs fewer SCF
+iterations. Smooth ASE MD trajectories suit the default `first-order` better.
 This only changes SCF iteration counts, not results.
 
 `command` may be a bare executable (`abacus`), an explicit launcher
