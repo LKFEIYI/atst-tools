@@ -1,3 +1,4 @@
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,7 +8,13 @@ from ase.calculators.calculator import Calculator, all_changes
 
 from atst_tools.calculators import factory
 from atst_tools.calculators.constant_potential import _backend_log_paths, _backend_scf_converged
-from atst_tools.utils.config_schema import ATSTConfig
+from atst_tools.api.services import validate_config
+from atst_tools.utils.abacus_io import (
+    _input_parameters,
+    _merged_abacus_parameters,
+    prepare_abacus_input_from_config,
+)
+from atst_tools.utils.config_schema import ABACUS_CONTROL_KEYS, ATSTConfig
 from atst_tools.workflows.md import _ScfValidatedCalculator
 
 
@@ -39,7 +46,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(factory, "ATSTAbacusProfile", FakeProfile)
     monkeypatch.setattr(factory, "Abacus", FakeAbacus)
     monkeypatch.setattr(factory, "AbacusSocketIO", FakeSocketIO)
-    monkeypatch.setattr(factory, "_SOCKET_CALCULATORS", [])
+    monkeypatch.setattr(factory, "_LIVE_SOCKET_CALCULATORS", weakref.WeakSet())
 
 
 def _config(socket, workflow="relax", **calculation):
@@ -94,13 +101,71 @@ def test_socket_mapping_disabled_falls_back_to_fileio(fakes):
     assert isinstance(calc, FakeAbacus)
 
 
-def test_close_socket_calculators_closes_each_once(fakes):
-    factory.CalculatorFactory.get_calculator("abacus", _config(True), directory="run")
+def test_socket_session_closes_only_clients_it_created(fakes):
+    outside = factory.CalculatorFactory.get_calculator("abacus", _config(True), directory="a")
+    with factory.socket_session() as owned:
+        inside = factory.CalculatorFactory.get_calculator("abacus", _config(True), directory="b")
+        assert owned == [inside]
 
-    factory.close_socket_calculators()
-    factory.close_socket_calculators()
+    assert inside.closed == 1
+    assert outside.closed == 0
 
-    assert [calc.closed for calc in FakeSocketIO.instances] == [1]
+
+def test_socket_session_closes_on_error_and_nests(fakes):
+    with pytest.raises(RuntimeError, match="boom"):
+        with factory.socket_session():
+            outer = factory.CalculatorFactory.get_calculator("abacus", _config(True), directory="a")
+            with factory.socket_session():
+                inner = factory.CalculatorFactory.get_calculator("abacus", _config(True), directory="b")
+            assert (inner.closed, outer.closed) == (1, 0)
+            raise RuntimeError("boom")
+
+    assert outer.closed == 1
+
+
+def test_explicit_socket_endpoint_cannot_be_shared_while_open(fakes):
+    config = _config({"unixsocket": "h2au"})
+    with factory.socket_session():
+        factory.CalculatorFactory.get_calculator("abacus", config, directory="a")
+        with pytest.raises(ValueError, match="already used"):
+            factory.CalculatorFactory.get_calculator("abacus", config, directory="b")
+
+    # Once the first client is closed, the endpoint is free again.
+    with factory.socket_session():
+        factory.CalculatorFactory.get_calculator("abacus", config, directory="c")
+
+
+@pytest.mark.parametrize("socket", ["omitted", False, True, {"unixsocket": "h2au"}])
+def test_socket_setting_never_reaches_generated_input(tmp_path, socket):
+    structure = tmp_path / "init.xyz"
+    structure.write_text("1\nfixture\nH 0 0 0\n", encoding="utf-8")
+    abacus = {
+        "pseudopotentials": {"H": "H.upf"},
+        "basissets": {"H": "H.orb"},
+        "parameters": {"calculation": "scf", "ecutwfc": 50},
+    }
+    if socket != "omitted":
+        abacus["socket"] = socket
+    config = validate_config({
+        "calculation": {"type": "relax", "init_structure": str(structure)},
+        "calculator": {"name": "abacus", "abacus": abacus},
+    })
+
+    assert "socket" not in _input_parameters(_merged_abacus_parameters(config["calculator"]["abacus"]))
+    prepare_abacus_input_from_config(config, str(structure), str(tmp_path / "prepared"))
+    input_text = (tmp_path / "prepared" / "INPUT").read_text(encoding="utf-8")
+    assert "ecutwfc" in input_text
+    assert "socket" not in input_text
+
+
+def test_every_input_writer_shares_the_control_keys():
+    from atst_tools.calculators import constant_potential
+    from atst_tools.utils import abacus_io
+
+    assert "socket" in ABACUS_CONTROL_KEYS
+    assert factory._ABACUS_CONTROL_KEYS is ABACUS_CONTROL_KEYS
+    assert constant_potential._ABACUS_CONTROL_KEYS is ABACUS_CONTROL_KEYS
+    assert abacus_io._ABACUS_META_KEYS is ABACUS_CONTROL_KEYS
 
 
 @pytest.mark.parametrize("workflow", ["neb", "autoneb", "irc", "dmf"])

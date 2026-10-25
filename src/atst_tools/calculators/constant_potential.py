@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 from ase.calculators.calculator import Calculator, all_changes
 
+from atst_tools.utils.config_schema import ABACUS_CONTROL_KEYS
 from atst_tools.utils.electrochemistry import chebyshev_derivative, surface_area
 
 
@@ -61,7 +62,7 @@ _CURRENT_SCF_FAILURE_MARKER = re.compile(
 CP_FACTS_INFO_KEY = "atst_constant_potential_facts"
 CP_IDENTITY_INFO_KEY = "atst_constant_potential_identity"
 CP_FACTS_SCHEMA = "atst-constant-potential-facts-v1"
-_ABACUS_CONTROL_KEYS = {"command", "mpi", "omp", "directory", "parameters", "version_command"}
+_ABACUS_CONTROL_KEYS = ABACUS_CONTROL_KEYS
 _FIXED_BOUNDARY_KEYS = (
     "gate_flag",
     "imp_sol",

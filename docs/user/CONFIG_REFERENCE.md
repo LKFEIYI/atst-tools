@@ -866,11 +866,15 @@ and initialization; ABACUS also extrapolates the charge density between steps
 build with `socket_driver`; the client side is abacuslite's `AbacusSocketIO`,
 already provided by the required `abacuslite` dependency.
 
-Energies returned through the socket are converted from Hartree with ASE's
-CODATA constant, while ABACUS prints eV with its own constant, so absolute
-socket energies differ from FileIO energies by a relative ~4e-7 (about 0.09 eV
-for a 2.4e5 eV cell). Energy differences and forces are unaffected; do not mix
-absolute energies from the two modes.
+Socket results travel in atomic units and are converted with ASE's CODATA
+constants, while FileIO reads values that ABACUS already converted with its own
+constants (`Hartree_to_eV = 27.211396`, `BOHR_TO_A = 0.5291770`). The two modes
+therefore differ by a small relative scale factor, not by a constant offset: at
+an identical geometry, socket energies are smaller in magnitude by 3.7e-7
+(about 0.09 eV for a 2.4e5 eV cell) and forces by 7.8e-7. Energy differences
+scale by the same factor (about 0.4 µeV for a 1 eV barrier), which is far below
+SCF noise, but absolute energies, energy references and cached results from the
+two modes should not be mixed.
 
 ```yaml
 calculator:

@@ -21,17 +21,11 @@ from atst_tools.calculators.abacuslite_backend import (
     import_latestio,
 )
 from atst_tools.utils.config import ConfigLoader
+from atst_tools.utils.config_schema import ABACUS_CONTROL_KEYS
 from atst_tools.utils.io import read_structure
 
 
-_ABACUS_META_KEYS = {
-    "command",
-    "directory",
-    "mpi",
-    "omp",
-    "parameters",
-    "version_command",
-}
+_ABACUS_META_KEYS = ABACUS_CONTROL_KEYS
 _ABACUS_NON_INPUT_KEYS = {
     "basis",
     "basissets",

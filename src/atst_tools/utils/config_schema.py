@@ -1065,8 +1065,15 @@ class AbacusSocketConfig(StrictConfig):
         return self
 
 
-# Workflows that drive exactly one fixed-cell ABACUS calculator, so one
-# persistent socket client is both safe and useful.
+#: ``calculator.abacus`` keys that control how ATST launches ABACUS. They are
+#: never ABACUS INPUT variables, so every INPUT writer must drop them.
+ABACUS_CONTROL_KEYS = frozenset(
+    {"command", "directory", "mpi", "omp", "parameters", "version_command", "socket"}
+)
+# Validated socket workflows, not the backend's full capability: each drives
+# exactly one fixed-cell ABACUS calculator for the whole run and has been
+# checked against FileIO with real ABACUS runs. Add a workflow only together
+# with that evidence.
 SOCKET_SUPPORTED_WORKFLOWS = ("relax", "md", "vibration", "dimer", "sella", "ccqn")
 # AbacusSocketIO is fixed-cell only, so variable-cell MD ensembles are excluded.
 SOCKET_FIXED_CELL_MD_ENSEMBLES = ("nve", "nvt")
@@ -1325,9 +1332,7 @@ class ATSTConfig(StrictConfig):
                 merged_parameters = {
                     key: value
                     for key, value in abacus.model_dump(mode="python").items()
-                    if key not in {
-                        "command", "directory", "mpi", "omp", "parameters", "version_command", "socket",
-                    }
+                    if key not in ABACUS_CONTROL_KEYS
                 }
                 merged_parameters.update(dict(abacus.parameters))
                 if "nupdown" in merged_parameters:

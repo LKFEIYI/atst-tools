@@ -9,8 +9,11 @@ import re
 import shlex
 import logging
 import math
+import weakref
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
-from typing import Any, Dict
+from typing import Any, Dict, Iterator
 
 from ase.calculators.calculator import Calculator
 
@@ -25,6 +28,7 @@ from atst_tools.calculators.dp import DeepPotentialFactory
 from atst_tools.runtime import counters as runtime_counters
 from atst_tools.runtime import launch as runtime_launch
 from atst_tools.utils.config_schema import (
+    ABACUS_CONTROL_KEYS,
     SOCKET_FIXED_CELL_MD_ENSEMBLES,
     SOCKET_SUPPORTED_WORKFLOWS,
     ConstantPotentialConfig,
@@ -33,15 +37,7 @@ from atst_tools.utils.config_schema import (
 from atst_tools.utils.mpi import mpi_launcher_detected
 
 
-_ABACUS_CONTROL_KEYS = {
-    "command",
-    "mpi",
-    "omp",
-    "directory",
-    "parameters",
-    "version_command",
-    "socket",
-}
+_ABACUS_CONTROL_KEYS = ABACUS_CONTROL_KEYS
 # INPUT keys that AbacusSocketIO validates only when passed through ``inp``.
 _SOCKET_INP_KEYS = ("calculation", "cal_force", "cal_stress")
 _MPI_ENV_KEYS_TO_CLEAR = (
@@ -60,8 +56,11 @@ LOGGER = logging.getLogger(__name__)
 _ABACUS_BACKEND_LOGGED = False
 _SHELL_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 _MPI_LAUNCHERS = {"mpirun", "mpiexec", "srun"}
-_SOCKET_CALCULATORS: list[Any] = []
 _SOCKET_NAME_COUNTER = itertools.count()
+#: Socket clients owned by the innermost active :func:`socket_session`.
+_SOCKET_SESSION: ContextVar[list[Any] | None] = ContextVar("atst_abacus_socket_session", default=None)
+#: Every socket client built in this process that has not been closed by ATST.
+_LIVE_SOCKET_CALCULATORS: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def _abacus_section(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -208,21 +207,45 @@ def _check_socket_workflow(config: Dict[str, Any]) -> None:
             )
 
 
-def close_socket_calculators() -> None:
-    """Shut down every ABACUS socket client started by this process.
+def _close_socket_calculator(calculator: Any) -> None:
+    """Close one socket client; failures are logged, never raised."""
+    _LIVE_SOCKET_CALCULATORS.discard(calculator)
+    try:
+        calculator.close()
+    except Exception as exc:  # pragma: no cover - best-effort cleanup
+        LOGGER.warning("Failed to close ABACUS socket calculator: %s", exc)
 
-    Safe to call repeatedly; failures are logged rather than raised so that
-    cleanup never masks the workflow outcome.
+
+@contextmanager
+def socket_session() -> Iterator[list[Any]]:
+    """Own the ABACUS socket clients built while this context is active.
+
+    Clients created by :class:`AbacusFactory` inside the context are closed
+    when it exits, including on error. Clients created outside any session
+    belong to the caller and are only closed at interpreter exit as a last
+    resort. Sessions are context-local (thread and asyncio safe) and may nest;
+    each session closes only the clients it created.
+
+    Yields:
+        The list of socket clients owned by this session.
     """
-    while _SOCKET_CALCULATORS:
-        calculator = _SOCKET_CALCULATORS.pop()
-        try:
-            calculator.close()
-        except Exception as exc:  # pragma: no cover - best-effort cleanup
-            LOGGER.warning("Failed to close ABACUS socket calculator: %s", exc)
+    owned: list[Any] = []
+    token = _SOCKET_SESSION.set(owned)
+    try:
+        yield owned
+    finally:
+        _SOCKET_SESSION.reset(token)
+        while owned:
+            _close_socket_calculator(owned.pop())
 
 
-atexit.register(close_socket_calculators)
+def _close_live_socket_calculators() -> None:
+    """Close socket clients still alive when the interpreter exits."""
+    for calculator in list(_LIVE_SOCKET_CALCULATORS):
+        _close_socket_calculator(calculator)
+
+
+atexit.register(_close_live_socket_calculators)
 
 
 def _resolve_directory(path: str | None) -> str | None:
@@ -311,8 +334,17 @@ class AbacusFactory:
         parameters: Dict[str, Any],
         socket: Dict[str, Any],
     ) -> Calculator:
-        """Build an ``AbacusSocketIO`` calculator and register it for shutdown."""
+        """Build an ``AbacusSocketIO`` calculator owned by the active socket session."""
         _check_socket_workflow(config)
+        endpoint = (
+            f"unix:{socket['unixsocket']}" if socket.get("unixsocket") is not None else f"port:{socket['port']}"
+        )
+        if any(getattr(live, "_atst_socket_endpoint", None) == endpoint for live in _LIVE_SOCKET_CALCULATORS):
+            raise ValueError(
+                f"ABACUS socket endpoint {endpoint} is already used by another open socket "
+                "calculator; set a distinct calculator.abacus.socket.unixsocket/port or omit "
+                "both to get a unique Unix socket"
+            )
         parameters = dict(parameters)
         inp = dict(parameters.pop("inp", {}) or {})
         for key in _SOCKET_INP_KEYS:
@@ -325,11 +357,12 @@ class AbacusFactory:
             **socket,
             **parameters,
         )
-        _SOCKET_CALCULATORS.append(calculator)
-        LOGGER.info(
-            "Using ABACUS i-PI socket client (%s).",
-            f"unix:{socket['unixsocket']}" if socket.get("unixsocket") else f"port:{socket['port']}",
-        )
+        calculator._atst_socket_endpoint = endpoint
+        _LIVE_SOCKET_CALCULATORS.add(calculator)
+        session = _SOCKET_SESSION.get()
+        if session is not None:
+            session.append(calculator)
+        LOGGER.info("Using ABACUS i-PI socket client (%s).", endpoint)
         return calculator
 
 
