@@ -894,16 +894,18 @@ ABACUS start-up is detected without a timeout.
 
 Restrictions: only `calculation.type` in `relax`, `md` (with `driver: ase`
 and a fixed-cell `ensemble: nve` or `nvt`; `npt` is rejected), `vibration`,
-`dimer` and `sella` (single fixed-cell calculator per run); it cannot be
+`dimer`, `sella` and `ccqn` (single fixed-cell calculator per run); it cannot be
 combined with `calculator.constant_potential`; the cell must stay fixed. The
 ABACUS client is shut down when the workflow ends, including on failure. The
 ASE MD SCF guard reads each step's convergence from the socket response, so
 unconverged steps are still rejected.
 
-`vibration` and `dimer` alternate small displacements in opposite directions,
-which the default `first-order` extrapolation assumes do not happen; setting
-`chg_extrap: atomic` in `parameters` usually gives a better initial density for
-these two workflows. This only changes SCF iteration counts, not results.
+In socket mode ABACUS counts the first frame as an extrapolation step, so the
+default `first-order` scheme over-extrapolates at the second geometry.
+`vibration`, `dimer` and `ccqn` also move back and forth between geometries,
+which breaks the linear trend `first-order` assumes. For these workflows,
+`chg_extrap: atomic` in `parameters` usually needs fewer SCF iterations.
+This only changes SCF iteration counts, not results.
 
 `command` may be a bare executable (`abacus`), an explicit launcher
 (`mpirun -np 4 abacus`, `srun -n 4 abacus`), or a template using `{mpi}` such

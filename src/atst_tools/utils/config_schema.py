@@ -1067,7 +1067,7 @@ class AbacusSocketConfig(StrictConfig):
 
 # Workflows that drive exactly one fixed-cell ABACUS calculator, so one
 # persistent socket client is both safe and useful.
-SOCKET_SUPPORTED_WORKFLOWS = ("relax", "md", "vibration", "dimer", "sella")
+SOCKET_SUPPORTED_WORKFLOWS = ("relax", "md", "vibration", "dimer", "sella", "ccqn")
 # AbacusSocketIO is fixed-cell only, so variable-cell MD ensembles are excluded.
 SOCKET_FIXED_CELL_MD_ENSEMBLES = ("nve", "nvt")
 

@@ -213,3 +213,15 @@ def test_md_scf_guard_accepts_converged_socket_and_rejects_unconverged():
     atoms.calc = _ScfValidatedCalculator(_SocketLikeBackend(False))
     with pytest.raises(RuntimeError, match="SCF not converged"):
         atoms.get_forces()
+
+
+def test_socket_accepts_ccqn(fakes):
+    calc = factory.CalculatorFactory.get_calculator("abacus", _config(True, "ccqn"), directory="run")
+
+    assert isinstance(calc, FakeSocketIO)
+
+
+def test_schema_accepts_socket_for_ccqn():
+    config = _schema_config(True, "ccqn", reactive_bonds="1-2")
+
+    assert ATSTConfig.model_validate(config).calculator.abacus.socket_enabled()
