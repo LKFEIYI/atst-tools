@@ -1,19 +1,16 @@
-import weakref
+import os
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
+from ase.calculators.socketio import bind_unixsocket
 
 from atst_tools.calculators import factory
 from atst_tools.calculators.constant_potential import _backend_log_paths, _backend_scf_converged
 from atst_tools.api.services import validate_config
-from atst_tools.utils.abacus_io import (
-    _input_parameters,
-    _merged_abacus_parameters,
-    prepare_abacus_input_from_config,
-)
+from atst_tools.utils.abacus_io import prepare_abacus_input_from_config
 from atst_tools.utils.config_schema import ABACUS_CONTROL_KEYS, ATSTConfig
 from atst_tools.workflows.md import _ScfValidatedCalculator
 
@@ -46,7 +43,6 @@ def fakes(monkeypatch):
     monkeypatch.setattr(factory, "ATSTAbacusProfile", FakeProfile)
     monkeypatch.setattr(factory, "Abacus", FakeAbacus)
     monkeypatch.setattr(factory, "AbacusSocketIO", FakeSocketIO)
-    monkeypatch.setattr(factory, "_LIVE_SOCKET_CALCULATORS", weakref.WeakSet())
 
 
 def _config(socket, workflow="relax", **calculation):
@@ -123,26 +119,32 @@ def test_socket_session_closes_on_error_and_nests(fakes):
     assert outer.closed == 1
 
 
-def test_explicit_socket_endpoint_cannot_be_shared_while_open(fakes):
+def test_explicit_socket_endpoint_is_passed_to_backend_unchecked(fakes):
     config = _config({"unixsocket": "h2au"})
-    with factory.socket_session():
-        factory.CalculatorFactory.get_calculator("abacus", config, directory="a")
-        with pytest.raises(ValueError, match="already used"):
-            factory.CalculatorFactory.get_calculator("abacus", config, directory="b")
+    first = factory.CalculatorFactory.get_calculator("abacus", config, directory="a")
+    second = factory.CalculatorFactory.get_calculator("abacus", config, directory="b")
 
-    # Once the first client is closed, the endpoint is free again.
-    with factory.socket_session():
-        factory.CalculatorFactory.get_calculator("abacus", config, directory="c")
+    # ATST keeps no endpoint registry; the backend bind decides conflicts.
+    assert first.kwargs["unixsocket"] == second.kwargs["unixsocket"] == "h2au"
 
 
-@pytest.mark.parametrize("socket", ["omitted", False, True, {"unixsocket": "h2au"}])
-def test_socket_setting_never_reaches_generated_input(tmp_path, socket):
+def test_backend_bind_rejects_an_occupied_unix_socket():
+    path = f"/tmp/ipi_atst_unit_{os.getpid()}"
+    with bind_unixsocket(path):
+        with pytest.raises(OSError, match="in use"):
+            with bind_unixsocket(path):
+                pass
+        assert os.path.exists(path)
+    assert not os.path.exists(path)
+
+
+def _prepared_input(tmp_path, socket, parameters=None):
     structure = tmp_path / "init.xyz"
     structure.write_text("1\nfixture\nH 0 0 0\n", encoding="utf-8")
     abacus = {
         "pseudopotentials": {"H": "H.upf"},
         "basissets": {"H": "H.orb"},
-        "parameters": {"calculation": "scf", "ecutwfc": 50},
+        "parameters": parameters or {"ecutwfc": 50},
     }
     if socket != "omitted":
         abacus["socket"] = socket
@@ -150,12 +152,35 @@ def test_socket_setting_never_reaches_generated_input(tmp_path, socket):
         "calculation": {"type": "relax", "init_structure": str(structure)},
         "calculator": {"name": "abacus", "abacus": abacus},
     })
-
-    assert "socket" not in _input_parameters(_merged_abacus_parameters(config["calculator"]["abacus"]))
     prepare_abacus_input_from_config(config, str(structure), str(tmp_path / "prepared"))
-    input_text = (tmp_path / "prepared" / "INPUT").read_text(encoding="utf-8")
+    return (tmp_path / "prepared" / "INPUT").read_text(encoding="utf-8")
+
+
+def _input_values(text):
+    return dict(line.split(maxsplit=1) for line in text.splitlines()[1:] if len(line.split()) == 2)
+
+
+@pytest.mark.parametrize("socket", ["omitted", False, {"enabled": False}])
+def test_disabled_socket_input_has_no_socket_keys(tmp_path, socket):
+    input_text = _prepared_input(tmp_path, socket)
+
     assert "ecutwfc" in input_text
     assert "socket" not in input_text
+
+
+@pytest.mark.parametrize("socket", [True, {"unixsocket": "h2au"}])
+def test_enabled_socket_input_matches_backend_semantics(tmp_path, socket):
+    values = _input_values(_prepared_input(tmp_path, socket, {"ecutwfc": 50, "cal_force": "true"}))
+
+    assert values["socket_driver"] == "1"
+    assert values["calculation"] == "scf"
+    assert values["cal_force"] == "1"
+    assert "socket" not in values
+
+
+def test_enabled_socket_input_rejects_contradictory_calculation(tmp_path):
+    with pytest.raises(ValueError, match="calculation"):
+        _prepared_input(tmp_path, True, {"calculation": "relax"})
 
 
 def test_every_input_writer_shares_the_control_keys():

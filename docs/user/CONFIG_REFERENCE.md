@@ -888,6 +888,12 @@ calculator:
     #   enabled: true
 ```
 
+An explicit `unixsocket` or `port` that is already in use, by ATST or another
+program, fails when ABACUS is first started; omit both to get a unique Unix
+socket. With socket mode enabled, prepared INPUT files and `--check-input`
+use the same socket INPUT as the run (`socket_driver 1`, `calculation scf`), and
+a contradictory `calculation` is rejected.
+
 `socket.timeout` (seconds) is passed unchanged to ASE's `SocketIOCalculator`
 and is unset by default, i.e. ATST waits indefinitely. It bounds each socket
 read, so once ABACUS is connected it covers a whole SCF plus force evaluation;
@@ -910,7 +916,10 @@ default `first-order` scheme over-extrapolates at the second geometry.
 geometries, which breaks the linear trend `first-order` assumes. For these
 workflows, `chg_extrap: atomic` in `parameters` usually needs fewer SCF
 iterations. Smooth ASE MD trajectories suit the default `first-order` better.
-This only changes SCF iteration counts, not results.
+With the same SCF convergence criterion this should not materially change
+converged results, but unconverged steps and path-dependent diagnostics may
+differ. For paired FileIO/socket comparisons, set `chg_extrap` explicitly to the
+same value in both runs.
 
 `command` may be a bare executable (`abacus`), an explicit launcher
 (`mpirun -np 4 abacus`, `srun -n 4 abacus`), or a template using `{mpi}` such

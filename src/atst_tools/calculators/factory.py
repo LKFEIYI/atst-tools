@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import atexit
 import itertools
 import os
 import re
 import shlex
 import logging
 import math
-import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -59,8 +57,6 @@ _MPI_LAUNCHERS = {"mpirun", "mpiexec", "srun"}
 _SOCKET_NAME_COUNTER = itertools.count()
 #: Socket clients owned by the innermost active :func:`socket_session`.
 _SOCKET_SESSION: ContextVar[list[Any] | None] = ContextVar("atst_abacus_socket_session", default=None)
-#: Every socket client built in this process that has not been closed by ATST.
-_LIVE_SOCKET_CALCULATORS: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
 
 def _abacus_section(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -209,7 +205,6 @@ def _check_socket_workflow(config: Dict[str, Any]) -> None:
 
 def _close_socket_calculator(calculator: Any) -> None:
     """Close one socket client; failures are logged, never raised."""
-    _LIVE_SOCKET_CALCULATORS.discard(calculator)
     try:
         calculator.close()
     except Exception as exc:  # pragma: no cover - best-effort cleanup
@@ -222,9 +217,9 @@ def socket_session() -> Iterator[list[Any]]:
 
     Clients created by :class:`AbacusFactory` inside the context are closed
     when it exits, including on error. Clients created outside any session
-    belong to the caller and are only closed at interpreter exit as a last
-    resort. Sessions are context-local (thread and asyncio safe) and may nest;
-    each session closes only the clients it created.
+    belong to the caller, who closes them. Sessions are context-local (thread
+    and asyncio safe) and may nest; each session closes only the clients it
+    created.
 
     Yields:
         The list of socket clients owned by this session.
@@ -237,15 +232,6 @@ def socket_session() -> Iterator[list[Any]]:
         _SOCKET_SESSION.reset(token)
         while owned:
             _close_socket_calculator(owned.pop())
-
-
-def _close_live_socket_calculators() -> None:
-    """Close socket clients still alive when the interpreter exits."""
-    for calculator in list(_LIVE_SOCKET_CALCULATORS):
-        _close_socket_calculator(calculator)
-
-
-atexit.register(_close_live_socket_calculators)
 
 
 def _resolve_directory(path: str | None) -> str | None:
@@ -334,17 +320,15 @@ class AbacusFactory:
         parameters: Dict[str, Any],
         socket: Dict[str, Any],
     ) -> Calculator:
-        """Build an ``AbacusSocketIO`` calculator owned by the active socket session."""
+        """Build an ``AbacusSocketIO`` calculator owned by the active socket session.
+
+        Endpoint conflicts are left to the backend: binding an occupied Unix
+        socket or TCP port fails when the first calculation starts the server.
+        """
         _check_socket_workflow(config)
         endpoint = (
             f"unix:{socket['unixsocket']}" if socket.get("unixsocket") is not None else f"port:{socket['port']}"
         )
-        if any(getattr(live, "_atst_socket_endpoint", None) == endpoint for live in _LIVE_SOCKET_CALCULATORS):
-            raise ValueError(
-                f"ABACUS socket endpoint {endpoint} is already used by another open socket "
-                "calculator; set a distinct calculator.abacus.socket.unixsocket/port or omit "
-                "both to get a unique Unix socket"
-            )
         parameters = dict(parameters)
         inp = dict(parameters.pop("inp", {}) or {})
         for key in _SOCKET_INP_KEYS:
@@ -357,8 +341,6 @@ class AbacusFactory:
             **socket,
             **parameters,
         )
-        calculator._atst_socket_endpoint = endpoint
-        _LIVE_SOCKET_CALCULATORS.add(calculator)
         session = _SOCKET_SESSION.get()
         if session is not None:
             session.append(calculator)

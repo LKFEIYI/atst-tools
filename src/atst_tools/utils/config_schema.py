@@ -1079,6 +1079,21 @@ SOCKET_SUPPORTED_WORKFLOWS = ("relax", "md", "vibration", "dimer", "sella", "ccq
 SOCKET_FIXED_CELL_MD_ENSEMBLES = ("nve", "nvt")
 
 
+def abacus_socket_requested(value: Any) -> bool:
+    """Return whether a raw ``calculator.abacus.socket`` value enables socket mode.
+
+    Args:
+        value: ``None``/``False``/``True`` or a mapping with an optional
+            ``enabled`` flag (default ``True``).
+
+    Returns:
+        ``True`` when socket mode is requested.
+    """
+    if isinstance(value, Mapping):
+        return bool(value.get("enabled", True))
+    return bool(value)
+
+
 class AbacusConfig(BaseModel):
     """ABACUS calculator configuration.
 
